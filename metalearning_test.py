@@ -17,6 +17,9 @@ class_num = 2
 task_num = 4
 curr_task = 0
 
+# 测试任务的数量
+num_test_task = 1
+
 alpha = []
 beta = 0.001
 
@@ -205,128 +208,260 @@ if __name__ == '__main__':
 
 
         # train every task
-        for task_dataset,i in zip(tasks_dataset,range(len(tasks_dataset))):
-            model = copy.deepcopy(meta_model)
+        for epoch in range(5):
+            print("epoch:{}".format(epoch))
+            for task_dataset,i in zip(tasks_dataset,range(len(tasks_dataset)-num_test_task)):
+                model = copy.deepcopy(meta_model)
 
-            train_dataset, test_dataset = train_test_split(task_dataset, test_size=0.3, random_state=0,stratify=task_dataset.y_data, shuffle=True)
+                train_dataset, test_dataset = train_test_split(task_dataset, test_size=0.3, random_state=0,stratify=task_dataset.y_data, shuffle=True)
 
-            # make the number of classes two:normal,abnormal
-            for example in train_dataset:
-                lst = list(example)
-                lst[1][0] = 1.0 if example[1][0] > 0 else 0.0
-                example = tuple(lst)
-            for example in test_dataset:
-                lst = list(example)
-                lst[1][0] = 1.0 if example[1][0] > 0 else 0.0
-                example = tuple(lst)
-
-
-            train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=1024, shuffle=True)
-            test_loader = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=len(test_dataset), shuffle=True)
-
-            # train
-            criterion = nn.CrossEntropyLoss()
-            # task_optimizer = optim.SGD(model.parameters(), lr=alpha)
-
-            model.train()
-            train_loss = 0
-            sita_seccond_order_gradlist = []
-            sita_first_order_gradlist = []
-            post_sita_order = []
-
-            for inputs, labels in train_loader:
-                inputs = inputs.to('cuda')
-                labels = labels.to('cuda')
-
-                for para in model.parameters():para.grad = None
-
-                outputs = model(inputs)
-                labels = labels.to(torch.int64)
-                labels = labels.view(-1)
-
-                loss = criterion(outputs, (F.one_hot(labels, num_classes=class_num)).to(torch.float64))
-
-                # get the seccond-order gradient and first-order gradient
-                dydx = torch.autograd.grad(loss, model.parameters(), retain_graph=True, create_graph=True)
-                d2ydx2 = [torch.autograd.grad(first_grad,para,retain_graph=True,grad_outputs=torch.ones_like(first_grad))[0] for first_grad,para in zip(dydx,model.parameters())]
-                sita_seccond_order_gradlist.append(d2ydx2)
-                sita_first_order_gradlist.append(dydx)
-
-                loss.backward()
-
-                sgd_optimize(model.parameters(), alpha, [para.grad for para in model.parameters()])
-
-                train_loss += loss.item()
+                # make the number of classes two:normal,abnormal
+                for example in train_dataset:
+                    lst = list(example)
+                    lst[1][0] = 1.0 if example[1][0] > 0 else 0.0
+                    example = tuple(lst)
+                for example in test_dataset:
+                    lst = list(example)
+                    lst[1][0] = 1.0 if example[1][0] > 0 else 0.0
+                    example = tuple(lst)
 
 
-            print('Train_task:{}, Loss per batch:{}'.format(i, train_loss / len(train_loader)))
+                train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=1024, shuffle=True)
+                test_loader = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=len(test_dataset), shuffle=True)
 
-            # test
-            TP = 0.0
-            FP = 0.0
-            TN = 0.0
-            FN = 0.0
-            test_loss = 0
+                # train
+                criterion = nn.CrossEntropyLoss()
+                # task_optimizer = optim.SGD(model.parameters(), lr=alpha)
 
-            for inputs, labels in test_loader:
-                inputs = inputs.to('cuda')
-                labels = labels.to('cuda')
+                model.train()
+                train_loss = 0
+                sita_seccond_order_gradlist = []
+                sita_first_order_gradlist = []
+                post_sita_order = []
 
-                outputs = model(inputs)
-                labels = labels.to(torch.int64)
-                labels = labels.view(-1)
+                for inputs, labels in train_loader:
+                    inputs = inputs.to('cuda')
+                    labels = labels.to('cuda')
 
-                loss = criterion(outputs, (F.one_hot(labels, num_classes=class_num)).to(torch.float64))
-                test_loss += loss
+                    for para in model.parameters():para.grad = None
 
-                res = torch.argmax(outputs, dim=1)
+                    outputs = model(inputs)
+                    labels = labels.to(torch.int64)
+                    labels = labels.view(-1)
 
-                for pre, truth in zip(res, labels):
-                    if pre.item() == 1:
-                        if truth.item() == 1:
-                            TP += 1
-                        else:
-                            FP += 1
+                    loss = criterion(outputs, (F.one_hot(labels, num_classes=class_num)).to(torch.float64))
 
-                    if pre.item() == 0:
-                        if truth.item() == 0:
-                            TN += 1
-                        else:
-                            FN += 1
+                    # get the seccond-order gradient and first-order gradient
+                    dydx = torch.autograd.grad(loss, model.parameters(), retain_graph=True, create_graph=True)
+                    d2ydx2 = [torch.autograd.grad(first_grad,para,retain_graph=True,grad_outputs=torch.ones_like(first_grad))[0] for first_grad,para in zip(dydx,model.parameters())]
+                    sita_seccond_order_gradlist.append(d2ydx2)
+                    sita_first_order_gradlist.append(dydx)
 
-                # get the post_sita_order
-                post_sita_order = torch.autograd.grad(loss, model.parameters(), retain_graph=True, create_graph=True)
+                    loss.backward()
 
-            print("Test_task:{}, Loss per batch:{}".format(i, test_loss.item() / len(test_loader)))
-            print('accuracy:{},recall:{}'.format((TP + TN) / (TP + FP + TN + FN), TP / (TP + FN)))
-            # compute the gradient of initial sita
+                    sgd_optimize(model.parameters(), alpha, [para.grad for para in model.parameters()])
 
-            sum_seccond_gradient = [torch.zeros_like(x) for x in sita_seccond_order_gradlist[0]]
-            for seccond_order_grad in sita_seccond_order_gradlist:
-                for gradsum, grad in zip(sum_seccond_gradient, seccond_order_grad):
-                    gradsum.data += grad.data
+                    train_loss += loss.item()
 
-            factor_rightlist = [1 - al * x for al,x in zip(alpha,sum_seccond_gradient)]
 
-            ini_sita_grad = [ fac1*fac2 for fac1,fac2 in zip(post_sita_order,factor_rightlist)]
+                print('Train_task:{}, Loss per batch:{}'.format(i, train_loss / len(train_loader)))
 
-            # update the initial sita
-            for ini_sita,ini_sita_grad in zip(meta_model.parameters(), ini_sita_grad):
-                ini_sita.grad = ini_sita_grad
+                # test
+                TP = 0.0
+                FP = 0.0
+                TN = 0.0
+                FN = 0.0
+                test_loss = 0
 
-            meta_optimizer.step()
+                for inputs, labels in test_loader:
+                    inputs = inputs.to('cuda')
+                    labels = labels.to('cuda')
 
-            # compute the gradient of initial alpha
-            sum_sita_first_gradient = None
-            sum_sita_first_gradient = [torch.zeros_like(x) for x in sita_first_order_gradlist[0]]
-            for first_order_grad in sita_first_order_gradlist:
-                for gradsum, grad in zip(sum_sita_first_gradient, first_order_grad):
-                    gradsum.data += grad.data
+                    outputs = model(inputs)
+                    labels = labels.to(torch.int64)
+                    labels = labels.view(-1)
 
-            for  al,po,firstg in zip(alpha,post_sita_order,sum_sita_first_gradient):
-                al.grad = po * (-firstg)
+                    loss = criterion(outputs, (F.one_hot(labels, num_classes=class_num)).to(torch.float64))
+                    test_loss += loss
 
-            # update the initial alpha
-            alpha_optimizer.step()
+                    res = torch.argmax(outputs, dim=1)
 
+                    for pre, truth in zip(res, labels):
+                        if pre.item() == 1:
+                            if truth.item() == 1:
+                                TP += 1
+                            else:
+                                FP += 1
+
+                        if pre.item() == 0:
+                            if truth.item() == 0:
+                                TN += 1
+                            else:
+                                FN += 1
+
+                    # get the post_sita_order
+                    post_sita_order = torch.autograd.grad(loss, model.parameters(), retain_graph=True, create_graph=True)
+
+                print("Test_task:{}, Loss per batch:{}".format(i, test_loss.item() / len(test_loader)))
+                print('accuracy:{},recall:{}'.format((TP + TN) / (TP + FP + TN + FN), TP / (TP + FN)))
+                # compute the gradient of initial sita
+
+                sum_seccond_gradient = [torch.zeros_like(x) for x in sita_seccond_order_gradlist[0]]
+                for seccond_order_grad in sita_seccond_order_gradlist:
+                    for gradsum, grad in zip(sum_seccond_gradient, seccond_order_grad):
+                        gradsum.data += grad.data
+
+                factor_rightlist = [1 - al * x for al,x in zip(alpha,sum_seccond_gradient)]
+
+                ini_sita_grad = [ fac1*fac2 for fac1,fac2 in zip(post_sita_order,factor_rightlist)]
+
+                # update the initial sita
+                for ini_sita,ini_sita_grad in zip(meta_model.parameters(), ini_sita_grad):
+                    ini_sita.grad = ini_sita_grad
+
+                meta_optimizer.step()
+
+                # compute the gradient of initial alpha
+                sum_sita_first_gradient = None
+                sum_sita_first_gradient = [torch.zeros_like(x) for x in sita_first_order_gradlist[0]]
+                for first_order_grad in sita_first_order_gradlist:
+                    for gradsum, grad in zip(sum_sita_first_gradient, first_order_grad):
+                        gradsum.data += grad.data
+
+                for  al,po,firstg in zip(alpha,post_sita_order,sum_sita_first_gradient):
+                    al.grad = po * (-firstg)
+
+                # update the initial alpha
+                alpha_optimizer.step()
+
+                print('--------------------------------------------')
+            print('--------------------------------------------')
+            print('test:')
+            for task_dataset,i in zip(tasks_dataset[len(tasks_dataset)-num_test_task:len(tasks_dataset)],range(len(tasks_dataset)-num_test_task,len(tasks_dataset))):
+                model = copy.deepcopy(meta_model)
+
+                train_dataset, test_dataset = train_test_split(task_dataset, test_size=0.3, random_state=0,
+                                                               stratify=task_dataset.y_data, shuffle=True)
+
+                # make the number of classes two:normal,abnormal
+                for example in train_dataset:
+                    lst = list(example)
+                    lst[1][0] = 1.0 if example[1][0] > 0 else 0.0
+                    example = tuple(lst)
+                for example in test_dataset:
+                    lst = list(example)
+                    lst[1][0] = 1.0 if example[1][0] > 0 else 0.0
+                    example = tuple(lst)
+
+                train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=1024, shuffle=True)
+                test_loader = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=len(test_dataset), shuffle=True)
+
+                # train
+                criterion = nn.CrossEntropyLoss()
+                # task_optimizer = optim.SGD(model.parameters(), lr=alpha)
+
+                model.train()
+                train_loss = 0
+                sita_seccond_order_gradlist = []
+                sita_first_order_gradlist = []
+                post_sita_order = []
+
+                for inputs, labels in train_loader:
+                    inputs = inputs.to('cuda')
+                    labels = labels.to('cuda')
+
+                    for para in model.parameters(): para.grad = None
+
+                    outputs = model(inputs)
+                    labels = labels.to(torch.int64)
+                    labels = labels.view(-1)
+
+                    loss = criterion(outputs, (F.one_hot(labels, num_classes=class_num)).to(torch.float64))
+
+                    # get the seccond-order gradient and first-order gradient
+                    dydx = torch.autograd.grad(loss, model.parameters(), retain_graph=True, create_graph=True)
+                    d2ydx2 = [
+                        torch.autograd.grad(first_grad, para, retain_graph=True, grad_outputs=torch.ones_like(first_grad))[
+                            0] for first_grad, para in zip(dydx, model.parameters())]
+                    sita_seccond_order_gradlist.append(d2ydx2)
+                    sita_first_order_gradlist.append(dydx)
+
+                    loss.backward()
+
+                    sgd_optimize(model.parameters(), alpha, [para.grad for para in model.parameters()])
+
+                    train_loss += loss.item()
+
+                print('Train_task:{}, Loss per batch:{}'.format(i, train_loss / len(train_loader)))
+
+                # test
+                TP = 0.0
+                FP = 0.0
+                TN = 0.0
+                FN = 0.0
+                test_loss = 0
+
+                for inputs, labels in test_loader:
+                    inputs = inputs.to('cuda')
+                    labels = labels.to('cuda')
+
+                    outputs = model(inputs)
+                    labels = labels.to(torch.int64)
+                    labels = labels.view(-1)
+
+                    loss = criterion(outputs, (F.one_hot(labels, num_classes=class_num)).to(torch.float64))
+                    test_loss += loss
+
+                    res = torch.argmax(outputs, dim=1)
+
+                    for pre, truth in zip(res, labels):
+                        if pre.item() == 1:
+                            if truth.item() == 1:
+                                TP += 1
+                            else:
+                                FP += 1
+
+                        if pre.item() == 0:
+                            if truth.item() == 0:
+                                TN += 1
+                            else:
+                                FN += 1
+
+                    # get the post_sita_order
+                    post_sita_order = torch.autograd.grad(loss, model.parameters(), retain_graph=True, create_graph=True)
+
+                print("Test_task:{}, Loss per batch:{}".format(i, test_loss.item() / len(test_loader)))
+                print('accuracy:{},recall:{}'.format((TP + TN) / (TP + FP + TN + FN), TP / (TP + FN)))
+                # compute the gradient of initial sita
+
+                # sum_seccond_gradient = [torch.zeros_like(x) for x in sita_seccond_order_gradlist[0]]
+                # for seccond_order_grad in sita_seccond_order_gradlist:
+                #     for gradsum, grad in zip(sum_seccond_gradient, seccond_order_grad):
+                #         gradsum.data += grad.data
+                #
+                # factor_rightlist = [1 - al * x for al, x in zip(alpha, sum_seccond_gradient)]
+                #
+                # ini_sita_grad = [fac1 * fac2 for fac1, fac2 in zip(post_sita_order, factor_rightlist)]
+                #
+                # # update the initial sita
+                # for ini_sita, ini_sita_grad in zip(meta_model.parameters(), ini_sita_grad):
+                #     ini_sita.grad = ini_sita_grad
+                #
+                # meta_optimizer.step()
+                #
+                # # compute the gradient of initial alpha
+                # sum_sita_first_gradient = None
+                # sum_sita_first_gradient = [torch.zeros_like(x) for x in sita_first_order_gradlist[0]]
+                # for first_order_grad in sita_first_order_gradlist:
+                #     for gradsum, grad in zip(sum_sita_first_gradient, first_order_grad):
+                #         gradsum.data += grad.data
+                #
+                # for al, po, firstg in zip(alpha, post_sita_order, sum_sita_first_gradient):
+                #     al.grad = po * (-firstg)
+                #
+                # # update the initial alpha
+                # alpha_optimizer.step()
+
+            print('--------------------------------------------')
+            print('--------------------------------------------')
             print('--------------------------------------------')
