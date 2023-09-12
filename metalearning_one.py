@@ -91,6 +91,45 @@ def split_tasks_datasets(task_num):
 
                 break
 
+# 保留时序的划分
+# def split_tasks_datasets(task_num):
+#     global tasks_dataset
+#     for attack_dataset_file in csv_file:
+#         tasks_dataset = []
+#         for i in range(task_num):
+#             if file_exists('./splitted_dataset/'+attack_dataset_file+'_x_data'+str(i)+'.pt') and file_exists('./splitted_dataset/'+attack_dataset_file+'_y_data'+str(i)+'.pt'):
+#                 pass
+#             else:
+#                 # category = 1
+#                 df = pd.read_csv(attack_dataset_file)
+#                 df.loc[:, ['Label']] = df.loc[:, ['Label']].applymap(lambda x: 0 if x == 'R' else 1)
+#                 # category += 1
+#
+#                 rows = len(df)
+#                 # 计算每份的行数
+#                 rows_per_split = rows // task_num
+#
+#                 # 分割数据集进每个任务
+#                 for i in range(task_num):
+#                     if i ==0:
+#                         tasks_dataset.append(df.iloc[:rows_per_split])
+#                     elif i == task_num-1:
+#                         tasks_dataset.append(df[rows_per_split*i:])
+#                     else:
+#                         tasks_dataset.append(df[rows_per_split*i:rows_per_split*(i+1)])
+#
+#
+#                 # 将分割出的每个任务数据集保存
+#                 for i in range(task_num):
+#                     xy = tasks_dataset[i].iloc[:,1:]
+#                     x_data = torch.Tensor(xy.iloc[:xy.shape[0], :-1].values)
+#                     y_data = torch.Tensor(xy.iloc[:xy.shape[0],[-1]].values.astype(float))
+#
+#                     torch.save(x_data, './splitted_dataset/'+attack_dataset_file+'_x_data'+str(i)+'.pt')
+#                     torch.save(y_data, './splitted_dataset/'+attack_dataset_file+'_y_data'+str(i)+'.pt')
+#
+#                 break
+
 # 为meta-sgd定义sgd优化函数
 def sgd_optimize(paralist, lrlist, gradlist):
     for para,lr,grad in zip(paralist,lrlist,gradlist):
@@ -176,22 +215,23 @@ if __name__ == '__main__':
 
     # train_dataset,val_dataset = random_split(train_data,[math.floor(len(train_data)*0.7),len(train_data)-math.floor(len(train_data)*0.7)])
     with torch.backends.cudnn.flags(enabled=False):
+        # meta_model = torch.load('one_4.pth')
         meta_model = LSTM_RNN().to(device='cuda')
+        torch.save(meta_model, 'seq_1.pth')
         meta_optimizer = optim.Adam(meta_model.parameters(), beta, weight_decay=0.01)
 
         # initialize the alpha
         # alpha = torch.load('./one_alpha1.pkl')
-        torch.save(meta_model,'one_2.pth')
         alpha = [torch.rand(para.size()).to('cuda') for para in meta_model.parameters()]
-        with open('one_alpha2.pkl', 'wb') as f:
+        with open('seq_alpha1.pkl', 'wb') as f:
             pickle.dump(alpha, f)
-        alpha_optimizer = optim.Adam(alpha, 0.01, weight_decay=0.01)
+        alpha_optimizer = optim.Adam(alpha, gama, weight_decay=0.01)
 
 
 
 
         # train every task
-        for epoch in range(5):
+        for epoch in range(4):
             print("epoch:{}".format(epoch))
             ini_sita_grad = None
             alpha_optimizer.zero_grad()
@@ -199,19 +239,51 @@ if __name__ == '__main__':
             # cnt:count the task number
             cnt = 0
             step = 0
-            for task_dataset,i in zip(tasks_dataset[0:(len(tasks_dataset)-num_test_task)],range(len(tasks_dataset)-num_test_task)):
-                model = copy.deepcopy(meta_model)
 
-                train_dataset, test_dataset = train_test_split(task_dataset, test_size=ratio, random_state=0,stratify=task_dataset.y_data, shuffle=True)
+            for task_dataset,i in zip(tasks_dataset[0:(len(tasks_dataset)-num_test_task)],range(len(tasks_dataset)-num_test_task)):
+                # the number of positive examples
+                trainpn = 0
+                testpn = 0
+                # the length of the longest consecutive positive examples
+                trainlongestpn = 0
+                testlongestpn = 0
+
+                model = copy.deepcopy(meta_model)
+                try:
+                    train_dataset, test_dataset = train_test_split(task_dataset, test_size=ratio, random_state=0,stratify=task_dataset.y_data)
+                except:
+                    continue
+                # the length of the task's train and test dataset
+                trainlen = len(train_dataset)
+                testlen = len(test_dataset)
 
                 # make the number of classes two:normal,abnormal
+                tmplen = 0
                 for example in train_dataset:
                     lst = list(example)
                     lst[1][0] = 1.0 if example[1][0] > 0 else 0.0
+                    if lst[1][0] > 0:
+                        trainpn += 1
+                        tmplen += 1
+                        if tmplen > trainlongestpn:
+                            trainlongestpn = tmplen
+                    else:
+                        tmplen = 0
+
                     example = tuple(lst)
+
+                tmplen = 0
                 for example in test_dataset:
                     lst = list(example)
                     lst[1][0] = 1.0 if example[1][0] > 0 else 0.0
+                    if lst[1][0] > 0:
+                        testpn += 1
+                        tmplen += 1
+                        if tmplen > testlongestpn:
+                            testlongestpn = tmplen
+                    else:
+                        tmplen = 0
+
                     example = tuple(lst)
 
 
@@ -290,9 +362,18 @@ if __name__ == '__main__':
 
                     # get the post_sita_order
                     post_sita_order = torch.autograd.grad(loss, model.parameters(), retain_graph=True, create_graph=True)
-
                 print("Test_task:{}, Loss per batch:{}".format(i, test_loss.item() / len(test_loader)))
-                print('accuracy:{},recall:{}'.format((TP + TN) / (TP + FP + TN + FN), TP / (TP + FN)))
+                try:
+                    print('accuracy:{},recall:{}'.format((TP + TN) / (TP + FP + TN + FN), TP / (TP + FN)))
+                except:
+                    print('accuracy:{},nrecall:{}'.format((TP + TN) / (TP + FP + TN + FN), TN / (TN + FP)))
+                print("The number of positive examples in train dataset:{},\n"
+                      "the number of positive examples in test dataset:{}".format(trainpn,testpn))
+                print("The length of the longest consecutive positive examples in train dataset:{},\n"
+                        "the length of the longest consecutive positive examples in test dataset:{}".format(trainlongestpn,testlongestpn))
+                print("the length of train dataset:{},\n"
+                        "the length of test dataset:{}".format(trainlen,testlen))
+                print('--------------------------------------------')
 
                 # compute the gradient of initial sita
                 sum_seccond_gradient = [torch.zeros_like(x) for x in sita_seccond_order_gradlist[0]]
@@ -338,19 +419,48 @@ if __name__ == '__main__':
             print('test:')
 
             for task_dataset,i in zip(tasks_dataset[len(tasks_dataset)-num_test_task:len(tasks_dataset)],range(len(tasks_dataset)-num_test_task,len(tasks_dataset))):
+                # the number of positive examples
+                trainpn = 0
+                testpn = 0
+                # the length of the longest consecutive positive examples
+                trainlongestpn = 0
+                testlongestpn = 0
+
                 model = copy.deepcopy(meta_model)
 
-                train_dataset, test_dataset = train_test_split(task_dataset, test_size=ratio, random_state=0,
-                                                               stratify=task_dataset.y_data, shuffle=True)
+                try:
+                    train_dataset, test_dataset = train_test_split(task_dataset, test_size=ratio, random_state=0,
+                                                                   stratify=task_dataset.y_data)
+                except:
+                    continue
+                # the length of the task's train and test dataset
+                trainlen = len(train_dataset)
+                testlen = len(test_dataset)
 
                 # make the number of classes two:normal,abnormal
                 for example in train_dataset:
                     lst = list(example)
                     lst[1][0] = 1.0 if example[1][0] > 0 else 0.0
+                    if lst[1][0] > 0:
+                        trainpn += 1
+                        tmplen += 1
+                        if tmplen > trainlongestpn:
+                            trainlongestpn = tmplen
+                    else:
+                        tmplen = 0
                     example = tuple(lst)
+
+                tmplen = 0
                 for example in test_dataset:
                     lst = list(example)
                     lst[1][0] = 1.0 if example[1][0] > 0 else 0.0
+                    if lst[1][0] > 0:
+                        testpn += 1
+                        tmplen += 1
+                        if tmplen > testlongestpn:
+                            testlongestpn = tmplen
+                    else:
+                        tmplen = 0
                     example = tuple(lst)
 
                 train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=batchsize_intask, shuffle=True)
@@ -434,9 +544,21 @@ if __name__ == '__main__':
                 print("Test_task:{}, Loss per batch:{}".format(i, test_loss.item() / len(test_loader)))
                 try:
                     print('accuracy:{},recall:{},precision:{},f1:{}'.format((TP + TN) / (TP + FP + TN + FN), TP / (TP + FN), TP / (TP + FP), 2*TP/(2*TP+FP+FN)))
-                    print("FPR:{},FNR:{}".format(FP/(FP+TN), FN/(TP+FN)))
+                    if FP+TN != 0:
+                        print("FPR:{},FNR:{}".format(FP/(FP+TN), FN/(TP+FN)))
+                    else:
+                        print("FNR:{}".format(FN/(TP+FN)))
                 except:
-                    pass
+                    print('accuracy:{},nrecall:{}'.format((TP + TN) / (TP + FP + TN + FN), TN / (TN + FP)))
+                    print("FPR:{}".format(FP/(FP+TN)))
+                print("The number of positive examples in train dataset:{},\n"
+                        "the number of positive examples in test dataset:{}".format(trainpn, testpn))
+                print("The length of the longest consecutive positive examples in train dataset:{},\n"
+                        "the length of the longest consecutive positive examples in test dataset:{}".format(
+                        trainlongestpn, testlongestpn))
+                print("the length of train dataset:{},\n"
+                        "the length of test dataset:{}".format(trainlen, testlen))
+                print('--------------------------------------------')
 
             print('--------------------------------------------')
             print('--------------------------------------------')
